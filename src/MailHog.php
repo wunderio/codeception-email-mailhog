@@ -100,7 +100,12 @@ class MailHog extends Module
   {
     try
     {
-      $this->mailhog->request('DELETE', '/api/v1/messages');
+      if (in_array(__FUNCTION__, $this->config['api_v2'])) {
+        $this->mailhog->request('DELETE', '/api/v2/messages');
+      }
+      else {
+        $this->mailhog->request('DELETE', '/api/v1/messages');
+      }
     }
     catch(Exception $e)
     {
@@ -119,8 +124,15 @@ class MailHog extends Module
 
     try
     {
-      $response = $this->mailhog->request('GET', '/api/v1/messages');
-      $this->fetchedEmails = json_decode($response->getBody());
+      if (in_array(__FUNCTION__, $this->config['api_v2'])) {
+        $response = $this->mailhog->request('GET', '/api/v2/messages');
+        $repsonseBodyDecoded = json_decode($response->getBody());
+        $this->fetchedEmails = $repsonseBodyDecoded->items;
+      }
+      else {
+        $response = $this->mailhog->request('GET', '/api/v1/messages');
+        $this->fetchedEmails = json_decode($response->getBody());
+      }
     }
     catch(Exception $e)
     {
@@ -131,6 +143,9 @@ class MailHog extends Module
 
     // by default, work on all emails
     $this->setCurrentInbox($this->fetchedEmails);
+
+    // Return all the mails.
+    return $this->fetchedEmails;
   }
 
   /**
@@ -158,6 +173,9 @@ class MailHog extends Module
       }
     }
     $this->setCurrentInbox($inbox);
+
+    // Return the inbox.
+    return $inbox;
   }
 
   /**
@@ -238,7 +256,7 @@ class MailHog extends Module
    */
   protected function getEmailSubject($email)
   {
-    return $this->getDecodedEmailProperty($email, $email->Content->Headers->Subject[0]);
+    return $email->Content->Headers->Subject[0];
   }
 
   /**
@@ -251,7 +269,7 @@ class MailHog extends Module
    */
   protected function getEmailBody($email)
   {
-    return $this->getDecodedEmailProperty($email, $email->Content->Body);
+    return $email->Content->Body;
   }
 
   /**
@@ -264,7 +282,7 @@ class MailHog extends Module
    */
   protected function getEmailTo($email)
   {
-    return $this->getDecodedEmailProperty($email, $email->Content->Headers->To[0]);
+    return $email->Content->Headers->To[0];
   }
 
   /**
@@ -277,11 +295,7 @@ class MailHog extends Module
    */
   protected function getEmailCC($email)
   {
-    $emailCc = '';
-    if (isset($email->Content->Headers->Cc)) {
-      $emailCc = $this->getDecodedEmailProperty($email, $email->Content->Headers->Cc[0]);
-    }
-    return $emailCc;
+    return $email->Content->Headers->Cc[0];
   }
 
   /**
@@ -294,11 +308,11 @@ class MailHog extends Module
    */
   protected function getEmailBCC($email)
   {
-    $emailBcc = '';
-    if (isset($email->Content->Headers->Bcc)) {
-      $emailBcc = $this->getDecodedEmailProperty($email, $email->Content->Headers->Bcc[0]);
+    if(isset($email->Content->Headers->Bcc))
+    {
+      return $email->Content->Headers->Bcc[0];
     }
-    return $emailBcc;
+    return "";
   }
 
   /**
@@ -311,18 +325,12 @@ class MailHog extends Module
    */
   protected function getEmailRecipients($email)
   {
-    $recipients = [];
-    if (isset($email->Content->Headers->To)) {
-      $recipients[] = $this->getEmailTo($email);
+    $recipients = $email->Content->Headers->To[0] . ' ' .
+                  $email->Content->Headers->Cc[0];
+    if(isset($email->Content->Headers->Bcc))
+    {
+      $recipients .= ' ' . $email->Content->Headers->Bcc[0];
     }
-    if (isset($email->Content->Headers->Cc)) {
-      $recipients[] = $this->getEmailCC($email);
-    }
-    if(isset($email->Content->Headers->Bcc)) {
-      $recipients[] = $this->getEmailBCC($email);
-    }
-
-    $recipients = implode(' ', $recipients);
 
     return $recipients;
   }
@@ -337,7 +345,7 @@ class MailHog extends Module
    */
   protected function getEmailSender($email)
   {
-    return $this->getDecodedEmailProperty($email, $email->Content->Headers->From[0]);
+    return $email->Content->Headers->From[0];
   }
 
   /**
@@ -350,7 +358,7 @@ class MailHog extends Module
    */
   protected function getEmailReplyTo($email)
   {
-    return $this->getDecodedEmailProperty($email, $email->Content->Headers->{'Reply-To'}[0]);
+    return $email->Content->Headers->{'Reply-To'}[0];
   }
 
   /**
@@ -363,27 +371,7 @@ class MailHog extends Module
    */
   protected function getEmailPriority($email)
   {
-    return $this->getDecodedEmailProperty($email, $email->Content->Headers->{'X-Priority'}[0]);
-  }
-
-  /**
-   * Returns the decoded email property
-   *
-   * @param string $property
-   * @return string
-   */
-  protected function getDecodedEmailProperty($email, $property) {
-    if ((string)$property != '') {
-      if (!empty($email->Content->Headers->{'Content-Transfer-Encoding'}) &&
-        in_array('quoted-printable', $email->Content->Headers->{'Content-Transfer-Encoding'})
-      ) {
-        $property = quoted_printable_decode($property);
-      }
-      if (strpos($property, '=?utf-8?Q?') !== false && extension_loaded('mbstring')) {
-        $property = mb_decode_mimeheader($property);
-      }
-    }
-    return $property;
+    return $email->Content->Headers->{'X-Priority'}[0];
   }
 
   /**
@@ -449,5 +437,48 @@ class MailHog extends Module
     $sortKeyA = $emailA->Content->Headers->Date;
     $sortKeyB = $emailB->Content->Headers->Date;
     return ($sortKeyA > $sortKeyB) ? -1 : 1;
+  }
+
+  /**
+  * Decodes MIME/HTTP encoded header values.
+  *
+  * @param $header
+  *   The header to decode.
+  *
+  * @return string
+  *   The mime-decoded header.
+  *
+  * Proudly found in includes/unicode.inc of Drupal 7.
+  */
+  public function mime_header_decode($header) {
+    // First step: encoded chunks followed by other encoded chunks (need to collapse whitespace)
+    $header = preg_replace_callback('/=\?([^?]+)\?(Q|B)\?([^?]+|\?(?!=))\?=\s+(?==\?)/', array(__CLASS__, '_mime_header_decode'), $header);
+    // Second step: remaining chunks (do not collapse whitespace)
+    return preg_replace_callback('/=\?([^?]+)\?(Q|B)\?([^?]+|\?(?!=))\?=/', array(__CLASS__, '_mime_header_decode'), $header);
+  }
+
+  /**
+   * Decodes encoded header data passed from mime_header_decode().
+   *
+   * Callback for preg_replace_callback() within mime_header_decode().
+   *
+   * @param $matches
+   *   The array of matches from preg_replace_callback().
+   *
+   * @return string
+   *   The mime-decoded string.
+   *
+   * @see mime_header_decode()
+   */
+  protected function _mime_header_decode($matches) {
+    // Regexp groups:
+    // 1: Character set name
+    // 2: Escaping method (Q or B)
+    // 3: Encoded data
+    $data = ($matches[2] == 'B') ? base64_decode($matches[3]) : str_replace('_', ' ', quoted_printable_decode($matches[3]));
+    if (strtolower($matches[1]) != 'utf-8') {
+      $data = drupal_convert_to_utf8($data, $matches[1]);
+    }
+    return $data;
   }
 }
